@@ -1,0 +1,69 @@
+---
+- name: Test Apache HTTP Server Installation and Configuration
+  hosts: webservers
+  become: yes
+  vars_files:
+    - ../vars/vhosts.yml
+  vars:
+    apache_service_name: httpd
+
+  tasks:
+    - name: Check Apache service status
+      systemd:
+        name: "{{ apache_service_name }}"
+      register: apache_status
+      tags: service_check
+
+    - name: Display Apache service status
+      debug:
+        msg: "Active: {{ apache_status.status.ActiveState }}, Running: {{ apache_status.status.SubState }}"
+      tags: service_check
+
+    - name: Check if Apache is listening on port 80
+      wait_for:
+        port: 80
+        host: "{{ ansible_default_ipv4.address }}"
+        timeout: 10
+      tags: port_check
+
+    - name: Test HTTP connectivity to default site
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}"
+        method: GET
+        status_code: 200
+      register: http_test
+      tags: http_test
+
+    - name: Test virtual hosts HTTP connectivity
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}"
+        method: GET
+        headers:
+          Host: "{{ item.server_name }}"
+        status_code: 200
+      loop: "{{ virtual_hosts }}"
+      register: vhost_http_test
+      tags: vhost_test
+
+    - name: Test custom 404 error page
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}/nonexistent-page"
+        method: GET
+        status_code: 404
+      register: error_page_test
+      tags: error_test
+
+    - name: Check Apache configuration syntax
+      command: httpd -t
+      register: config_syntax
+      changed_when: false
+      tags: syntax_check
+
+    - name: Generate test report
+      template:
+        src: ../templates/test-report.html.j2
+        dest: /var/www/html/test-report.html
+        owner: apache
+        group: apache
+        mode: '0644'
+      tags: test_report
