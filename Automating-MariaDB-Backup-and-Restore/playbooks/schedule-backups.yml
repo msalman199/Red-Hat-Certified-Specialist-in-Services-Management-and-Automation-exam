@@ -1,0 +1,19 @@
+---
+- name: Schedule Automated MariaDB Backups
+  hosts: database_servers
+  become: yes
+  vars:
+    backup_script_path: "/usr/local/bin/mariadb-backup.sh"
+
+  tasks:
+    - name: Schedule daily backup at 2 AM
+      cron:
+        name: "MariaDB Daily Backup"
+        minute: "0"
+        hour: "2"
+        job: "{{ backup_script_path }}"
+        user: root
+
+    - name: Display scheduling confirmation
+      debug:
+        msg: "Daily backup scheduled at 02:00 via {{ backup_script_path }}"

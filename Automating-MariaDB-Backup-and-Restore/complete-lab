@@ -1,0 +1,367 @@
+Lab 13: Automating MariaDB Backup and Restore
+Objectives
+By the end of this lab, students will be able to:
+
+Create Ansible playbooks that perform automated MariaDB database backups
+Implement automated database restoration procedures using Ansible
+Schedule recurring backup operations with cron and validate their execution
+Verify backup integrity and confirm successful data restoration
+Apply a basic retention policy to manage backup storage
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with MariaDB/MySQL database concepts (databases, tables, dump files)
+Basic knowledge of Ansible playbooks and YAML syntax
+Understanding of cron jobs and task scheduling
+Knowledge of file permissions and directory structures
+This lab assumes a self-owned or Al Nafi-provided isolated practice environment (CentOS/RHEL 8 or Ubuntu 20.04 LTS) with root or sudo access. All actions are performed against local, disposable test databases created in this lab â�� do not run these playbooks against production systems.
+
+Install the required packages if they are not already present:
+
+# On RHEL/CentOS
+sudo dnf install -y mariadb-server mariadb ansible python3-pip
+
+# On Ubuntu/Debian
+sudo apt update
+sudo apt install -y mariadb-server mariadb-client ansible python3-pip
+
+# Required Ansible collection for MySQL/MariaDB modules
+ansible-galaxy collection install community.mysql
+
+# Python MySQL client library used by Ansible's community.mysql modules
+pip3 install PyMySQL
+Task 1: Build an Automated Backup Playbook
+Subtask 1.1: Prepare the Lab Environment
+Start and enable MariaDB:
+sudo systemctl start mariadb
+sudo systemctl enable mariadb
+sudo systemctl status mariadb --no-pager
+You should see active (running) in the status output.
+
+Create the project directory structure:
+mkdir -p ~/mariadb-automation/{playbooks,inventory,scripts}
+cd ~/mariadb-automation
+Create the inventory file:
+cat > inventory/hosts << 'EOF'
+[database_servers]
+localhost ansible_connection=local
+
+[database_servers:vars]
+ansible_become=yes
+EOF
+Secure the root account with a known password (used throughout this lab for consistency):
+sudo mysql -u root << 'EOF'
+ALTER USER 'root'@'localhost' IDENTIFIED BY 'LabRoot123!';
+FLUSH PRIVILEGES;
+EOF
+Create a credentials file so Ansible and the CLI do not need the password typed interactively:
+
+sudo tee /root/.my.cnf > /dev/null << 'EOF'
+[client]
+user=root
+password=LabRoot123!
+EOF
+sudo chmod 600 /root/.my.cnf
+Deliverable: Running sudo mysql -e "SELECT 1;" succeeds with no password prompt, confirming /root/.my.cnf is being used.
+
+Subtask 1.2: Create Sample Databases for Testing
+sudo mysql << 'EOF'
+CREATE DATABASE IF NOT EXISTS company_db;
+CREATE DATABASE IF NOT EXISTS inventory_db;
+
+USE company_db;
+CREATE TABLE IF NOT EXISTS employees (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100),
+    department VARCHAR(50),
+    salary DECIMAL(10,2)
+);
+INSERT INTO employees (name, department, salary) VALUES
+('John Doe', 'IT', 75000.00),
+('Jane Smith', 'HR', 65000.00),
+('Mike Johnson', 'Finance', 80000.00);
+
+USE inventory_db;
+CREATE TABLE IF NOT EXISTS products (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100),
+    quantity INT,
+    price DECIMAL(8,2)
+);
+INSERT INTO products (name, quantity, price) VALUES
+('Laptop', 50, 999.99),
+('Mouse', 200, 25.50),
+('Keyboard', 150, 75.00);
+EOF
+Deliverable: sudo mysql -e "SELECT COUNT(*) FROM company_db.employees;" returns 3.
+
+Subtask 1.3: Create the Backup Playbook
+cat > playbooks/mariadb-backup.yml << 'EOF'
+---
+- name: MariaDB Database Backup Automation
+  hosts: database_servers
+  become: yes
+  vars:
+    backup_dir: "/opt/mariadb-backups"
+    backup_retention_days: 7
+    databases_to_backup:
+      - company_db
+      - inventory_db
+    backup_timestamp: "{{ ansible_date_time.year }}{{ ansible_date_time.month }}{{ ansible_date_time.day }}_{{ ansible_date_time.hour }}{{ ansible_date_time.minute }}{{ ansible_date_time.second }}"
+
+  tasks:
+    - name: Create base backup directory
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: Create daily backup subdirectory
+      file:
+        path: "{{ backup_dir }}/{{ ansible_date_time.date }}"
+        state: directory
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: Ensure MariaDB is running
+      service:
+        name: mariadb
+        state: started
+
+    - name: Back up each database individually
+      shell: >
+        mysqldump --defaults-extra-file=/root/.my.cnf
+        --single-transaction --routines --triggers
+        {{ item }} | gzip > {{ backup_dir }}/{{ ansible_date_time.date }}/{{ item }}_{{ backup_timestamp }}.sql.gz
+      args:
+        creates: "{{ backup_dir }}/{{ ansible_date_time.date }}/{{ item }}_{{ backup_timestamp }}.sql.gz"
+      loop: "{{ databases_to_backup }}"
+
+    - name: Verify backup files exist and are non-empty
+      stat:
+        path: "{{ backup_dir }}/{{ ansible_date_time.date }}/{{ item }}_{{ backup_timestamp }}.sql.gz"
+      loop: "{{ databases_to_backup }}"
+      register: backup_file_stats
+      failed_when: not backup_file_stats.stat.exists or backup_file_stats.stat.size == 0
+
+    - name: Record backup completion in log
+      lineinfile:
+        path: "{{ backup_dir }}/backup.log"
+        line: "{{ ansible_date_time.iso8601 }} - Backup completed for: {{ databases_to_backup | join(', ') }}"
+        create: yes
+        mode: '0600'
+
+    - name: Identify backup directories older than retention period
+      find:
+        paths: "{{ backup_dir }}"
+        age: "{{ backup_retention_days }}d"
+        file_type: directory
+      register: old_backups
+
+    - name: Remove backup directories beyond retention policy
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_backups.files }}"
+
+    - name: Display backup summary
+      debug:
+        msg: >
+          Backup complete. Location: {{ backup_dir }}/{{ ansible_date_time.date }},
+          Databases: {{ databases_to_backup | join(', ') }},
+          Timestamp: {{ backup_timestamp }}
+EOF
+Subtask 1.4: Run and Verify the Backup
+cd ~/mariadb-automation
+ansible-playbook -i inventory/hosts playbooks/mariadb-backup.yml -v
+Verify the output files:
+
+ls -la /opt/mariadb-backups/"$(date +%Y-%m-%d)"/
+zcat /opt/mariadb-backups/"$(date +%Y-%m-%d)"/company_db_*.sql.gz | head -20
+Deliverable: The playbook run ends with failed=0. The daily directory contains two .sql.gz files (company_db_* and inventory_db_*), and zcat ... | head -20 shows a valid mysqldump header beginning with -- MySQL dump.
+
+Task 2: Automate Database Restoration and Validate Integrity
+Subtask 2.1: Create the Restore Playbook
+cat > playbooks/mariadb-restore.yml << 'EOF'
+---
+- name: MariaDB Database Restore Automation
+  hosts: database_servers
+  become: yes
+  vars:
+    backup_dir: "/opt/mariadb-backups"
+    restore_date: "{{ restore_target_date | default(ansible_date_time.date) }}"
+    databases_to_restore:
+      - company_db
+      - inventory_db
+
+  tasks:
+    - name: Confirm backup directory for restore date exists
+      stat:
+        path: "{{ backup_dir }}/{{ restore_date }}"
+      register: backup_dir_stat
+
+    - name: Fail if backup directory is missing
+      fail:
+        msg: "No backups found for date {{ restore_date }} in {{ backup_dir }}"
+      when: not backup_dir_stat.stat.exists
+
+    - name: Locate latest backup file for each database
+      shell: >
+        ls -t {{ backup_dir }}/{{ restore_date }}/{{ item }}_*.sql.gz | head -1
+      loop: "{{ databases_to_restore }}"
+      register: latest_backup_files
+      changed_when: false
+
+    - name: Restore each database from its latest backup
+      shell: >
+        zcat {{ item.stdout }} | mysql --defaults-extra-file=/root/.my.cnf {{ item.item }}
+      loop: "{{ latest_backup_files.results }}"
+
+    - name: Record restore completion in log
+      lineinfile:
+        path: "{{ backup_dir }}/restore.log"
+        line: "{{ ansible_date_time.iso8601 }} - Restored databases from {{ restore_date }}: {{ databases_to_restore | join(', ') }}"
+        create: yes
+        mode: '0600'
+
+    - name: Display restore summary
+      debug:
+        msg: >
+          Restore complete for {{ databases_to_restore | join(', ') }} using
+          backups from {{ backup_dir }}/{{ restore_date }}
+EOF
+Subtask 2.2: Test the Full Backup-Modify-Restore Cycle
+Modify data to simulate an incident:
+sudo mysql << 'EOF'
+USE company_db;
+DELETE FROM employees WHERE name = 'John Doe';
+INSERT INTO employees (name, department, salary) VALUES ('Accidental Row', 'Testing', 1.00);
+SELECT * FROM employees;
+EOF
+Confirm the table now shows 3 rows: Jane Smith, Mike Johnson, and Accidental Row (John Doe is gone).
+
+Run the restore playbook to bring the database back to its last backed-up state:
+ansible-playbook -i inventory/hosts playbooks/mariadb-restore.yml -v
+Verify the restoration:
+sudo mysql -e "USE company_db; SELECT * FROM employees;"
+Deliverable: The employees table shows the original 3 rows (John Doe, Jane Smith, Mike Johnson) with Accidental Row gone, confirming the restore reverted the unwanted changes. The debug task output ends with Restore complete for company_db, inventory_db ....
+
+Subtask 2.3: Verify Backup Integrity Programmatically
+Add an integrity-check playbook that confirms every backup file is a valid gzip archive containing a real SQL dump before it is trusted:
+
+cat > playbooks/verify-backups.yml << 'EOF'
+---
+- name: Verify MariaDB Backup Integrity
+  hosts: database_servers
+  become: yes
+  vars:
+    backup_dir: "/opt/mariadb-backups"
+    check_date: "{{ restore_target_date | default(ansible_date_time.date) }}"
+
+  tasks:
+    - name: List backup files for the target date
+      find:
+        paths: "{{ backup_dir }}/{{ check_date }}"
+        patterns: "*.sql.gz"
+      register: found_backups
+
+    - name: Test gzip integrity of each backup file
+      shell: gzip -t {{ item.path }}
+      loop: "{{ found_backups.files }}"
+      register: gzip_test
+
+    - name: Confirm each archive contains a MySQL dump header
+      shell: zcat {{ item.path }} | head -1 | grep -q "MySQL dump"
+      loop: "{{ found_backups.files }}"
+      register: header_check
+
+    - name: Report integrity check results
+      debug:
+        msg: "Verified {{ found_backups.files | length }} backup file(s) for {{ check_date }}: all passed gzip and header checks"
+EOF
+Run it:
+
+ansible-playbook -i inventory/hosts playbooks/verify-backups.yml -v
+Deliverable: The play recap shows failed=0. If any file were corrupted, the gzip -t or grep step would fail with a non-zero return code, halting the play.
+
+Task 3: Schedule Automated Backups with Cron
+Subtask 3.1: Create a Standalone Backup Script
+cat > scripts/mariadb-backup.sh << 'EOF'
+#!/bin/bash
+# Automated MariaDB Backup Script
+
+BACKUP_DIR="/opt/mariadb-backups"
+DATE=$(date +%Y-%m-%d)
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+DATABASES=("company_db" "inventory_db")
+RETENTION_DAYS=7
+
+mkdir -p "$BACKUP_DIR/$DATE"
+
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$BACKUP_DIR/backup.log"
+}
+
+log_message "Starting automated backup"
+
+for db in "${DATABASES[@]}"; do
+    if mysqldump --defaults-extra-file=/root/.my.cnf --single-transaction --routines --triggers "$db" \
+        | gzip > "$BACKUP_DIR/$DATE/${db}_${TIMESTAMP}.sql.gz"; then
+        log_message "Successfully backed up $db"
+    else
+        log_message "ERROR: Failed to back up $db"
+        exit 1
+    fi
+done
+
+log_message "Cleaning up backups older than $RETENTION_DAYS days"
+find "$BACKUP_DIR" -maxdepth 1 -type d -mtime +$RETENTION_DAYS -exec rm -rf {} \; 2>/dev/null
+
+log_message "Backup process completed successfully"
+EOF
+chmod +x scripts/mariadb-backup.sh
+sudo cp scripts/mariadb-backup.sh /usr/local/bin/mariadb-backup.sh
+sudo chmod 700 /usr/local/bin/mariadb-backup.sh
+Subtask 3.2: Schedule the Script with Ansible's Cron Module
+cat > playbooks/schedule-backups.yml << 'EOF'
+---
+- name: Schedule Automated MariaDB Backups
+  hosts: database_servers
+  become: yes
+  vars:
+    backup_script_path: "/usr/local/bin/mariadb-backup.sh"
+
+  tasks:
+    - name: Schedule daily backup at 2 AM
+      cron:
+        name: "MariaDB Daily Backup"
+        minute: "0"
+        hour: "2"
+        job: "{{ backup_script_path }}"
+        user: root
+
+    - name: Display scheduling confirmation
+      debug:
+        msg: "Daily backup scheduled at 02:00 via {{ backup_script_path }}"
+EOF
+ansible-playbook -i inventory/hosts playbooks/schedule-backups.yml -v
+Subtask 3.3: Verify the Scheduled Job and Test the Script Manually
+sudo crontab -l
+sudo /usr/local/bin/mariadb-backup.sh
+tail -5 /opt/mariadb-backups/backup.log
+Deliverable: sudo crontab -l lists a line containing 0 2 * * * /usr/local/bin/mariadb-backup.sh. After manually running the script, tail -5 /opt/mariadb-backups/backup.log shows a Backup process completed successfully entry with a fresh timestamp.
+
+Expected Outcomes
+A working Ansible playbook that backs up multiple MariaDB databases with compression, verification, and a retention policy
+A working Ansible restore playbook that automatically locates and restores the latest backup for each database, validated by a modify-then-restore test
+A cron-scheduled backup script confirmed to run automatically and log its results
+Troubleshooting
+Symptom: mysqldump or mysql commands fail with ERROR 1045 (28000): Access denied for user 'root'@'localhost'. Diagnostic hint: Check that /root/.my.cnf exists, has mode 600, and its password value matches the password you set with ALTER USER. Confirm with sudo cat /root/.my.cnf (as root) and re-test with sudo mysql -e "SELECT CURRENT_USER();".
+Symptom: Ansible task fails with Destination directory /opt/mariadb-backups/... does not exist or a Permission denied writing backup files. Diagnostic hint: Verify the playbook is running with become: yes and check ownership/mode with ls -ld /opt/mariadb-backups; the directory should be owned by root with mode 0700 since it holds sensitive dump files.
+Symptom: verify-backups.yml fails on gzip -t for a specific file. Diagnostic hint: The backup was likely interrupted mid-write; check backup.log for an error around that timestamp and re-run mariadb-backup.sh manually to regenerate a clean file before trusting it for restore.
+Conclusion
+In this lab, students built a complete, automated backup and restore workflow for MariaDB using Ansible, including individual database dumps, gzip compression, integrity verification, a time-based retention policy, and cron-based scheduling. Along the way, students practiced core operational concepts: taking consistent backups with --single-transaction, proving restore reliability through a deliberate modify-then-restore test, and validating backup integrity before trusting a file for recovery. Next steps for extending this work include adding monitoring and alerting (for example, notifying an administrator when a scheduled backup job fails or produces a zero-byte file), performing periodic disaster recovery drills on a separate test host to confirm backups are actually usable, and hardening the environment further by encrypting backup archives at rest, restricting backup file access to a dedicated service account instead of root, and storing copies of backups off-host to protect against local disk failure.

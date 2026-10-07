@@ -1,0 +1,28 @@
+---
+- name: Verify MariaDB Backup Integrity
+  hosts: database_servers
+  become: yes
+  vars:
+    backup_dir: "/opt/mariadb-backups"
+    check_date: "{{ restore_target_date | default(ansible_date_time.date) }}"
+
+  tasks:
+    - name: List backup files for the target date
+      find:
+        paths: "{{ backup_dir }}/{{ check_date }}"
+        patterns: "*.sql.gz"
+      register: found_backups
+
+    - name: Test gzip integrity of each backup file
+      shell: gzip -t {{ item.path }}
+      loop: "{{ found_backups.files }}"
+      register: gzip_test
+
+    - name: Confirm each archive contains a MySQL dump header
+      shell: zcat {{ item.path }} | head -1 | grep -q "MySQL dump"
+      loop: "{{ found_backups.files }}"
+      register: header_check
+
+    - name: Report integrity check results
+      debug:
+        msg: "Verified {{ found_backups.files | length }} backup file(s) for {{ check_date }}: all passed gzip and header checks"

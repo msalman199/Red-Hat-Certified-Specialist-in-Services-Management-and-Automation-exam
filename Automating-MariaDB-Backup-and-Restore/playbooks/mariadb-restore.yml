@@ -1,0 +1,46 @@
+---
+- name: MariaDB Database Restore Automation
+  hosts: database_servers
+  become: yes
+  vars:
+    backup_dir: "/opt/mariadb-backups"
+    restore_date: "{{ restore_target_date | default(ansible_date_time.date) }}"
+    databases_to_restore:
+      - company_db
+      - inventory_db
+
+  tasks:
+    - name: Confirm backup directory for restore date exists
+      stat:
+        path: "{{ backup_dir }}/{{ restore_date }}"
+      register: backup_dir_stat
+
+    - name: Fail if backup directory is missing
+      fail:
+        msg: "No backups found for date {{ restore_date }} in {{ backup_dir }}"
+      when: not backup_dir_stat.stat.exists
+
+    - name: Locate latest backup file for each database
+      shell: >
+        ls -t {{ backup_dir }}/{{ restore_date }}/{{ item }}_*.sql.gz | head -1
+      loop: "{{ databases_to_restore }}"
+      register: latest_backup_files
+      changed_when: false
+
+    - name: Restore each database from its latest backup
+      shell: >
+        zcat {{ item.stdout }} | mysql --defaults-extra-file=/root/.my.cnf {{ item.item }}
+      loop: "{{ latest_backup_files.results }}"
+
+    - name: Record restore completion in log
+      lineinfile:
+        path: "{{ backup_dir }}/restore.log"
+        line: "{{ ansible_date_time.iso8601 }} - Restored databases from {{ restore_date }}: {{ databases_to_restore | join(', ') }}"
+        create: yes
+        mode: '0600'
+
+    - name: Display restore summary
+      debug:
+        msg: >
+          Restore complete for {{ databases_to_restore | join(', ') }} using
+          backups from {{ backup_dir }}/{{ restore_date }}
