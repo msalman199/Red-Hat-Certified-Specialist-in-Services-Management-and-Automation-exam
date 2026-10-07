@@ -1,0 +1,42 @@
+---
+- name: User Account Audit
+  hosts: all
+  become: yes
+  tasks:
+    - name: Gather user account information
+      getent:
+        database: passwd
+      register: user_accounts
+
+    - name: Create audit report directory
+      file:
+        path: /var/log/ansible-audit
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Generate user audit report
+      template:
+        src: user-audit.j2
+        dest: "/var/log/ansible-audit/user-audit-{{ ansible_date_time.date }}.txt"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Check for users with sudo access
+      shell: "getent group wheel sudo | cut -d: -f4"
+      register: sudo_users
+      ignore_errors: yes
+
+    - name: Display sudo users
+      debug:
+        msg: "Users with sudo access: {{ sudo_users.stdout }}"
+
+    - name: Check last login information
+      shell: "lastlog | grep -v 'Never logged in' | tail -10"
+      register: recent_logins
+
+    - name: Display recent logins
+      debug:
+        msg: "{{ recent_logins.stdout_lines }}"

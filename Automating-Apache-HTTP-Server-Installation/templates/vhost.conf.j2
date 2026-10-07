@@ -1,0 +1,12 @@
+<VirtualHost *:80>
+    ServerName {{ item.server_name }}
+    DocumentRoot {{ item.document_root }}
+
+    <Directory "{{ item.document_root }}">
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    ErrorLog /var/log/httpd/{{ item.server_name }}_error.log
+    CustomLog /var/log/httpd/{{ item.server_name }}_access.log combined
+</VirtualHost>

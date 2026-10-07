@@ -1,0 +1,511 @@
+Lab Material
+Lab 5: Automating Apache HTTP Server Installation
+Objectives
+By the end of this lab, students will be able to:
+
+Understand the fundamentals of Ansible automation for web server deployment
+Create and execute Ansible playbooks to install and configure Apache HTTP Server
+Configure virtual hosts and custom error pages for multiple websites on a single server
+Deploy and validate Apache configurations using automated testing playbooks
+Troubleshoot common Apache installation and configuration issues
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux command line operations
+Familiarity with YAML syntax and structure
+Knowledge of web server concepts (HTTP, HTTPS, virtual hosts)
+Understanding of SSH key-based authentication
+Basic networking concepts (ports and firewalls)
+Required Knowledge Level: Intermediate Linux administration and basic Ansible concepts
+
+Required Tools: This lab assumes Ansible is available on the control node. If it is not installed, install it with:
+
+sudo yum install -y ansible
+Lab Environment Setup
+Al Nafi Cloud Machines: This lab uses pre-configured Linux-based cloud machines provided by Al Nafi. Simply click Start Lab to access your environment. No need to build your own virtual machines.
+
+Environment Details:
+
+Control Node: CentOS/RHEL 8 with Ansible pre-installed
+Target Nodes: 2 CentOS/RHEL 8 servers for Apache deployment
+Network: All machines configured with SSH key authentication
+Tools: Ansible, curl, and a text editor are available on the control node
+All commands in this lab are run from the control node unless otherwise noted.
+
+Task 1: Setting Up Ansible Environment and Initial Playbook
+Subtask 1.1: Verify Ansible Installation and Inventory Setup
+Verify Ansible installation:
+ansible --version
+Create the project directory structure:
+mkdir -p ~/apache-automation/{playbooks,inventory,templates,vars}
+cd ~/apache-automation
+Create the inventory file to define your target servers. Replace the IP addresses with the actual addresses of your lab's target nodes:
+cat > inventory/hosts.yml << 'EOF'
+all:
+  children:
+    webservers:
+      hosts:
+        web1:
+          ansible_host: 10.0.1.10
+          ansible_user: centos
+        web2:
+          ansible_host: 10.0.1.11
+          ansible_user: centos
+  vars:
+    ansible_ssh_private_key_file: ~/.ssh/id_rsa
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+EOF
+Test connectivity to your target servers:
+ansible -i inventory/hosts.yml webservers -m ping
+Deliverable: Both web1 and web2 return "ping": "pong" with a SUCCESS status. If a host returns UNREACHABLE, verify the IP address and SSH key before continuing.
+
+Subtask 1.2: Create Basic Apache Installation Playbook
+Create the main Apache installation playbook:
+cat > playbooks/apache-install.yml << 'EOF'
+---
+- name: Install and Configure Apache HTTP Server
+  hosts: webservers
+  become: yes
+  vars:
+    apache_service_name: httpd
+    apache_document_root: /var/www/html
+
+  tasks:
+    - name: Install Apache HTTP Server
+      yum:
+        name:
+          - httpd
+          - httpd-tools
+          - mod_ssl
+        state: present
+      tags: apache_install
+
+    - name: Start and enable Apache service
+      systemd:
+        name: "{{ apache_service_name }}"
+        state: started
+        enabled: yes
+      tags: apache_service
+
+    - name: Configure firewall for HTTP and HTTPS
+      firewalld:
+        service: "{{ item }}"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - http
+        - https
+      tags: firewall
+      ignore_errors: yes
+
+    - name: Create basic index.html
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Apache Server - {{ inventory_hostname }}</title>
+          </head>
+          <body>
+              <h1>Welcome to {{ inventory_hostname }}</h1>
+              <p>Apache HTTP Server is running successfully.</p>
+              <p>Server Time: {{ ansible_date_time.iso8601 }}</p>
+          </body>
+          </html>
+        dest: "{{ apache_document_root }}/index.html"
+        owner: apache
+        group: apache
+        mode: '0644'
+      tags: default_page
+EOF
+Execute the basic installation playbook:
+ansible-playbook -i inventory/hosts.yml playbooks/apache-install.yml
+Verify the installation by testing HTTP access from the control node (replace with your actual target IPs):
+curl -I http://10.0.1.10
+curl -I http://10.0.1.11
+Deliverable: Both curl commands return HTTP/1.1 200 OK. The playbook run reports failed=0 for both hosts.
+
+Task 2: Configuring Virtual Hosts and Custom Error Pages
+Subtask 2.1: Create Virtual Host Template and Variables
+Create the virtual host template:
+cat > templates/vhost.conf.j2 << 'EOF'
+<VirtualHost *:80>
+    ServerName {{ item.server_name }}
+    DocumentRoot {{ item.document_root }}
+
+    <Directory "{{ item.document_root }}">
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    ErrorLog /var/log/httpd/{{ item.server_name }}_error.log
+    CustomLog /var/log/httpd/{{ item.server_name }}_access.log combined
+</VirtualHost>
+EOF
+Create the variables file for virtual hosts:
+cat > vars/vhosts.yml << 'EOF'
+virtual_hosts:
+  - server_name: "example1.local"
+    document_root: "/var/www/example1"
+
+  - server_name: "example2.local"
+    document_root: "/var/www/example2"
+EOF
+Subtask 2.2: Create Error Page Templates
+Create the templates directory for error pages and add the 404 page:
+mkdir -p templates/error-pages
+
+cat > templates/error-pages/404.html.j2 << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>404 - Page Not Found</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #2c3e50;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .error-container {
+            text-align: center;
+            padding: 40px;
+        }
+        .error-code {
+            font-size: 100px;
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1 class="error-code">404</h1>
+        <h2>Page Not Found</h2>
+        <p>The page you requested does not exist on this server.</p>
+        <p style="font-size: 12px;">Server: {{ inventory_hostname }}</p>
+    </div>
+</body>
+</html>
+EOF
+Add the 500 error page:
+cat > templates/error-pages/500.html.j2 << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>500 - Internal Server Error</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #922b21;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+        .error-container {
+            text-align: center;
+            padding: 40px;
+        }
+        .error-code {
+            font-size: 100px;
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1 class="error-code">500</h1>
+        <h2>Internal Server Error</h2>
+        <p>Something went wrong on the server. Please try again later.</p>
+        <p style="font-size: 12px;">Server: {{ inventory_hostname }}</p>
+    </div>
+</body>
+</html>
+EOF
+Subtask 2.3: Create the Virtual Hosts and Error Pages Playbook
+Create the combined configuration playbook:
+cat > playbooks/configure-vhosts.yml << 'EOF'
+---
+- name: Configure Apache Virtual Hosts and Error Pages
+  hosts: webservers
+  become: yes
+  vars_files:
+    - ../vars/vhosts.yml
+  vars:
+    apache_service_name: httpd
+    apache_config_dir: /etc/httpd
+    error_pages_dir: /var/www/error-pages
+
+  tasks:
+    - name: Create document root directories
+      file:
+        path: "{{ item.document_root }}"
+        state: directory
+        owner: apache
+        group: apache
+        mode: '0755'
+      loop: "{{ virtual_hosts }}"
+      tags: document_roots
+
+    - name: Create virtual host configuration files
+      template:
+        src: ../templates/vhost.conf.j2
+        dest: "{{ apache_config_dir }}/conf.d/{{ item.server_name }}.conf"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      loop: "{{ virtual_hosts }}"
+      notify: restart apache
+      tags: vhost_config
+
+    - name: Create sample content for each virtual host
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head><title>{{ item.server_name }}</title></head>
+          <body>
+              <h1>Welcome to {{ item.server_name }}</h1>
+              <p>Virtual host configuration successful on {{ inventory_hostname }}.</p>
+          </body>
+          </html>
+        dest: "{{ item.document_root }}/index.html"
+        owner: apache
+        group: apache
+        mode: '0644'
+      loop: "{{ virtual_hosts }}"
+      tags: sample_content
+
+    - name: Create error pages directory
+      file:
+        path: "{{ error_pages_dir }}"
+        state: directory
+        owner: apache
+        group: apache
+        mode: '0755'
+      tags: error_dirs
+
+    - name: Deploy custom error pages
+      template:
+        src: "../templates/error-pages/{{ item }}.html.j2"
+        dest: "{{ error_pages_dir }}/{{ item }}.html"
+        owner: apache
+        group: apache
+        mode: '0644'
+      loop:
+        - '404'
+        - '500'
+      tags: error_pages
+
+    - name: Configure global error pages in httpd.conf
+      blockinfile:
+        path: "{{ apache_config_dir }}/conf/httpd.conf"
+        block: |
+          ErrorDocument 404 /error-pages/404.html
+          ErrorDocument 500 /error-pages/500.html
+          Alias /error-pages "{{ error_pages_dir }}"
+          <Directory "{{ error_pages_dir }}">
+              AllowOverride None
+              Require all granted
+          </Directory>
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Error Pages"
+        backup: yes
+      notify: restart apache
+      tags: error_config
+
+    - name: Test Apache configuration syntax
+      command: httpd -t
+      register: apache_config_test
+      changed_when: false
+      tags: config_test
+
+    - name: Display configuration test results
+      debug:
+        var: apache_config_test.stderr_lines
+      tags: config_test
+
+  handlers:
+    - name: restart apache
+      systemd:
+        name: "{{ apache_service_name }}"
+        state: restarted
+EOF
+Execute the virtual hosts and error pages configuration:
+ansible-playbook -i inventory/hosts.yml playbooks/configure-vhosts.yml
+Deliverable: The play recap shows failed=0, and the debug task output for apache_config_test.stderr_lines shows Syntax OK.
+
+Task 3: Testing and Validating the Deployment
+Subtask 3.1: Create a Test Report Template
+Create the test report HTML template:
+cat > templates/test-report.html.j2 << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Apache Test Report - {{ inventory_hostname }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .header { background: #2c3e50; color: white; padding: 20px; border-radius: 5px; margin-bottom: 20px; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #34495e; color: white; }
+        .status-ok { color: #27ae60; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Apache HTTP Server Test Report</h1>
+            <p><strong>Server:</strong> {{ inventory_hostname }}</p>
+            <p><strong>Test Date:</strong> {{ ansible_date_time.iso8601 }}</p>
+        </div>
+        <table>
+            <tr><th>Check</th><th>Result</th></tr>
+            <tr><td>Apache Service Active</td><td class="status-ok">{{ apache_status.status.ActiveState }}</td></tr>
+            <tr><td>Port 80 Reachable</td><td class="status-ok">Yes</td></tr>
+            <tr><td>HTTP Status Code</td><td class="status-ok">{{ http_test.status }}</td></tr>
+            <tr><td>Configuration Syntax</td><td class="status-ok">OK</td></tr>
+        </table>
+        <h2>Virtual Hosts Tested</h2>
+        <ul>
+        {% for vh in virtual_hosts %}
+            <li>{{ vh.server_name }} - Document Root: {{ vh.document_root }}</li>
+        {% endfor %}
+        </ul>
+    </div>
+</body>
+</html>
+EOF
+Subtask 3.2: Create and Execute the Test Playbook
+Create the testing and validation playbook:
+cat > playbooks/test-apache.yml << 'EOF'
+---
+- name: Test Apache HTTP Server Installation and Configuration
+  hosts: webservers
+  become: yes
+  vars_files:
+    - ../vars/vhosts.yml
+  vars:
+    apache_service_name: httpd
+
+  tasks:
+    - name: Check Apache service status
+      systemd:
+        name: "{{ apache_service_name }}"
+      register: apache_status
+      tags: service_check
+
+    - name: Display Apache service status
+      debug:
+        msg: "Active: {{ apache_status.status.ActiveState }}, Running: {{ apache_status.status.SubState }}"
+      tags: service_check
+
+    - name: Check if Apache is listening on port 80
+      wait_for:
+        port: 80
+        host: "{{ ansible_default_ipv4.address }}"
+        timeout: 10
+      tags: port_check
+
+    - name: Test HTTP connectivity to default site
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}"
+        method: GET
+        status_code: 200
+      register: http_test
+      tags: http_test
+
+    - name: Test virtual hosts HTTP connectivity
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}"
+        method: GET
+        headers:
+          Host: "{{ item.server_name }}"
+        status_code: 200
+      loop: "{{ virtual_hosts }}"
+      register: vhost_http_test
+      tags: vhost_test
+
+    - name: Test custom 404 error page
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}/nonexistent-page"
+        method: GET
+        status_code: 404
+      register: error_page_test
+      tags: error_test
+
+    - name: Check Apache configuration syntax
+      command: httpd -t
+      register: config_syntax
+      changed_when: false
+      tags: syntax_check
+
+    - name: Generate test report
+      template:
+        src: ../templates/test-report.html.j2
+        dest: /var/www/html/test-report.html
+        owner: apache
+        group: apache
+        mode: '0644'
+      tags: test_report
+EOF
+Execute the test playbook:
+ansible-playbook -i inventory/hosts.yml playbooks/test-apache.yml
+Deliverable: The play recap shows failed=0 for both hosts. The debug task prints Active: active, Running: running for each server.
+
+Subtask 3.3: Validate Results and Interpret the Test Report
+Fetch and view the generated test report from the control node (replace with your actual target IP):
+curl -s http://10.0.1.10/test-report.html | grep -A2 "Check</th>"
+Confirm the custom error page is served correctly:
+curl -s http://10.0.1.10/nonexistent-page | grep "404"
+Interpret the results:
+If http_test.status is 200, the default site and virtual hosts are reachable.
+If the error_page_test task passed with status_code: 404, the custom error page configuration in httpd.conf is active and correctly routes unknown URLs.
+If config_syntax.stdout or config_syntax.stderr contains Syntax OK, the Apache configuration is valid and safe to reload.
+Deliverable: The curl command against /nonexistent-page returns the custom 404 page content (the text "404" appears in the output) rather than a generic Apache error page, and the test report page at /test-report.html renders a table showing active for the Apache service.
+
+Troubleshooting
+Common issues you may encounter during this lab:
+
+Apache fails to start or httpd -t reports a syntax error
+
+Symptom: systemctl status httpd shows failed, or the restart apache handler causes the playbook to fail.
+Diagnostic hint: Run ansible webservers -i inventory/hosts.yml -b -m command -a "httpd -t" to see the exact configuration error and file/line number, then check the corresponding .conf file in /etc/httpd/conf.d/ for typos such as unmatched <Directory> blocks.
+curl returns connection refused or times out on port 80
+
+Symptom: curl -I http://<host> hangs or returns Connection refused.
+Diagnostic hint: Check whether the firewall is blocking the port with ansible webservers -i inventory/hosts.yml -b -m command -a "firewall-cmd --list-services", and confirm SELinux is not blocking Apache with ansible webservers -i inventory/hosts.yml -b -m command -a "getenforce".
+Virtual host returns the default site instead of expected content
+
+Symptom: Requesting example1.local via the Host header still returns the default index.html.
+Diagnostic hint: Verify the virtual host file was created in /etc/httpd/conf.d/ and that Apache was actually restarted after the change (check the handler ran by looking for a changed status on the restart apache handler in the playbook output).
+ansible -m ping fails with UNREACHABLE
+
+Symptom: Ansible cannot connect to web1 or web2.
+Diagnostic hint: Confirm the IP addresses in inventory/hosts.yml match the actual assigned addresses for your lab environment, and test raw SSH connectivity manually with ssh centos@<ip>.
+Lab Cleanup
+If you need to remove the lab resources and reset the target servers, run the following from the control node:
+
+ansible -i inventory/hosts.yml webservers -b -m yum -a "name=httpd,mod_ssl,httpd-tools state=absent"
+ansible -i inventory/hosts.yml webservers -b -m file -a "path=/var/www/example1 state=absent"
+ansible -i inventory/hosts.yml webservers -b -m file -a "path=/var/www/example2 state=absent"
+ansible -i inventory/hosts.yml webservers -b -m file -a "path=/var/www/error-pages state=absent"
+This removes Apache and the virtual host content created during the lab. The project files on the control node (~/apache-automation) can be removed with rm -rf ~/apache-automation if no longer needed.
+
+Expected Outcomes
+A working Ansible project that installs Apache, configures two virtual hosts, and deploys custom 404 and 500 error pages across two target servers
+An automated test playbook that validates service status, HTTP connectivity, virtual host routing, and configuration syntax, producing a viewable HTML test report
+Practical experience diagnosing common Apache and Ansible connectivity or configuration failures
+Conclusion
+In this lab, you used Ansible to automate the full lifecycle of an Apache HTTP Server deployment: installing the software, configuring multiple virtual hosts with dedicated document roots, deploying custom error pages, and building a dedicated test playbook to validate the result. You practiced core Ansible concepts including inventories, variables files, Jinja2 templates, handlers, and the uri and wait_for modules for validation, while also learning to read Ansible task output and Apache's own httpd -t syntax checker to confirm a deployment is healthy. The troubleshooting steps covered here, checking service status, firewall rules, SELinux, and virtual host routing, reflect the same diagnostic process used in production web server administration. From here, you can extend this project by adding real SSL/TLS certificates from a certificate authority, integrating Ansible Vault to protect sensitive variables, or converting these playbooks into reusable Ansible roles for larger, multi-environment deployments.

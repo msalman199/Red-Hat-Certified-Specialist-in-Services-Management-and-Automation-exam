@@ -1,0 +1,6 @@
+virtual_hosts:
+  - server_name: "example1.local"
+    document_root: "/var/www/example1"
+
+  - server_name: "example2.local"
+    document_root: "/var/www/example2"

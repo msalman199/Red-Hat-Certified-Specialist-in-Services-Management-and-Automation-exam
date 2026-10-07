@@ -1,0 +1,105 @@
+---
+- name: Configure Apache Virtual Hosts and Error Pages
+  hosts: webservers
+  become: yes
+  vars_files:
+    - ../vars/vhosts.yml
+  vars:
+    apache_service_name: httpd
+    apache_config_dir: /etc/httpd
+    error_pages_dir: /var/www/error-pages
+
+  tasks:
+    - name: Create document root directories
+      file:
+        path: "{{ item.document_root }}"
+        state: directory
+        owner: apache
+        group: apache
+        mode: '0755'
+      loop: "{{ virtual_hosts }}"
+      tags: document_roots
+
+    - name: Create virtual host configuration files
+      template:
+        src: ../templates/vhost.conf.j2
+        dest: "{{ apache_config_dir }}/conf.d/{{ item.server_name }}.conf"
+        owner: root
+        group: root
+        mode: '0644'
+        backup: yes
+      loop: "{{ virtual_hosts }}"
+      notify: restart apache
+      tags: vhost_config
+
+    - name: Create sample content for each virtual host
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head><title>{{ item.server_name }}</title></head>
+          <body>
+              <h1>Welcome to {{ item.server_name }}</h1>
+              <p>Virtual host configuration successful on {{ inventory_hostname }}.</p>
+          </body>
+          </html>
+        dest: "{{ item.document_root }}/index.html"
+        owner: apache
+        group: apache
+        mode: '0644'
+      loop: "{{ virtual_hosts }}"
+      tags: sample_content
+
+    - name: Create error pages directory
+      file:
+        path: "{{ error_pages_dir }}"
+        state: directory
+        owner: apache
+        group: apache
+        mode: '0755'
+      tags: error_dirs
+
+    - name: Deploy custom error pages
+      template:
+        src: "../templates/error-pages/{{ item }}.html.j2"
+        dest: "{{ error_pages_dir }}/{{ item }}.html"
+        owner: apache
+        group: apache
+        mode: '0644'
+      loop:
+        - '404'
+        - '500'
+      tags: error_pages
+
+    - name: Configure global error pages in httpd.conf
+      blockinfile:
+        path: "{{ apache_config_dir }}/conf/httpd.conf"
+        block: |
+          ErrorDocument 404 /error-pages/404.html
+          ErrorDocument 500 /error-pages/500.html
+          Alias /error-pages "{{ error_pages_dir }}"
+          <Directory "{{ error_pages_dir }}">
+              AllowOverride None
+              Require all granted
+          </Directory>
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Error Pages"
+        backup: yes
+      notify: restart apache
+      tags: error_config
+
+    - name: Test Apache configuration syntax
+      command: httpd -t
+      register: apache_config_test
+      changed_when: false
+      tags: config_test
+
+    - name: Display configuration test results
+      debug:
+        var: apache_config_test.stderr_lines
+      tags: config_test
+
+  handlers:
+    - name: restart apache
+      systemd:
+        name: "{{ apache_service_name }}"
+        state: restarted

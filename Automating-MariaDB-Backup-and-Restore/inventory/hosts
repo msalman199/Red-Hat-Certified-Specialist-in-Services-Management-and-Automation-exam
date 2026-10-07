@@ -1,0 +1,5 @@
+[database_servers]
+localhost ansible_connection=local
+
+[database_servers:vars]
+ansible_become=yes
