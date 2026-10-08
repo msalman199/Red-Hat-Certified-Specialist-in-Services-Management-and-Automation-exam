@@ -1,0 +1,11 @@
+
+module new_custom_policy 1.0;
+
+require {
+	type default_t;
+	type httpd_t;
+	class file read;
+}
+
+#============= httpd_t ==============
+allow httpd_t default_t:file read;

@@ -1,0 +1,9 @@
+=== SELinux Configuration Summary ===
+SELinux Status: Enforcing
+Custom File Contexts:
+/custom/database/data(/.*)?                        all files          system_u:object_r:mysqld_db_t:s0 
+Custom Modules:
+custom_httpd_policy
+Services Status:
+active
+active
