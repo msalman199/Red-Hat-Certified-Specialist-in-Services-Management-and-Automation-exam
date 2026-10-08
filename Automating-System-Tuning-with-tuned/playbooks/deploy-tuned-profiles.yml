@@ -1,0 +1,8 @@
+---
+- name: Deploy and Configure tuned Profiles
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  roles:
+    - tuned_management

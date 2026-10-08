@@ -1,0 +1,627 @@
+Lab 19: Automating System Tuning with tuned
+Objectives
+By the end of this lab, students will be able to:
+
+Understand the purpose and functionality of the tuned daemon for system performance optimization
+Install and configure tuned profiles to optimize system performance for specific workloads
+Create and customize tuned profiles based on system requirements
+Automate the deployment and management of tuned profiles using Ansible
+Verify and measure performance improvements using sysctl commands and benchmarking scripts
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Linux system administration
+Familiarity with command-line interface and text editors
+Knowledge of system performance concepts (CPU, memory, I/O)
+Basic understanding of Ansible automation concepts
+Experience with YAML configuration files
+Understanding of system monitoring and performance metrics
+Required packages must be installed before starting Task 1 and Task 3:
+
+# Install tuned, Ansible, Python 3, and monitoring utilities
+sudo dnf install tuned tuned-utils ansible python3 sysstat -y
+Lab Environment
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines for this lab. Simply click Start Lab to access your environment - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+CentOS/RHEL 8 or 9 based systems
+Pre-installed tuned package
+Ansible automation platform
+System monitoring tools
+Root access for system configuration
+Task 1: Install and Configure tuned Profiles for System Optimization
+Subtask 1.1: Understanding tuned and Available Profiles
+First, let's explore the tuned daemon and understand what profiles are available on your system.
+
+Check if tuned is installed and running:
+# Check tuned installation status
+rpm -qa | grep tuned
+
+# Check tuned service status
+systemctl status tuned
+Install tuned if not already present:
+# Install tuned package
+sudo dnf install tuned tuned-utils -y
+
+# Enable and start tuned service
+sudo systemctl enable tuned
+sudo systemctl start tuned
+List available tuned profiles:
+# Display all available profiles
+tuned-adm list
+
+# Show currently active profile
+tuned-adm active
+
+# Get detailed information about current profile
+tuned-adm profile_info
+Subtask 1.2: Exploring and Applying Default Profiles
+View profile details:
+# Get information about the balanced profile
+tuned-adm profile_info balanced
+
+# Get information about the throughput-performance profile
+tuned-adm profile_info throughput-performance
+
+# Get information about the latency-performance profile
+tuned-adm profile_info latency-performance
+Check profile locations and configurations:
+# List profile directories
+ls -la /usr/lib/tuned/
+
+# Examine a profile configuration
+cat /usr/lib/tuned/balanced/tuned.conf
+
+# Check for custom profiles
+ls -la /etc/tuned/
+Apply and compare profiles:
+# Apply throughput-performance profile
+sudo tuned-adm profile throughput-performance
+tuned-adm active
+sysctl vm.swappiness
+sysctl kernel.sched_min_granularity_ns
+
+# Apply latency-performance profile
+sudo tuned-adm profile latency-performance
+tuned-adm active
+sysctl kernel.sched_min_granularity_ns
+sysctl kernel.sched_wakeup_granularity_ns
+Create a baseline measurement script:
+cat > /tmp/performance_test.sh << 'EOF'
+#!/bin/bash
+
+echo "=== System Performance Baseline ==="
+echo "Current tuned profile: $(tuned-adm active)"
+echo "Date: $(date)"
+echo ""
+
+echo "=== CPU Information ==="
+lscpu | grep -E "CPU\(s\)|Thread|Core|Socket"
+echo ""
+
+echo "=== Memory Information ==="
+free -h
+echo ""
+
+echo "=== Key Kernel Parameters ==="
+echo "vm.swappiness: $(sysctl -n vm.swappiness)"
+echo "vm.dirty_ratio: $(sysctl -n vm.dirty_ratio)"
+echo "kernel.sched_min_granularity_ns: $(sysctl -n kernel.sched_min_granularity_ns)"
+echo "net.core.rmem_max: $(sysctl -n net.core.rmem_max)"
+echo ""
+
+echo "=== CPU Governor ==="
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "CPU governor info not available"
+echo ""
+
+echo "=== Load Average ==="
+uptime
+echo ""
+EOF
+
+chmod +x /tmp/performance_test.sh
+Run baseline tests with different profiles:
+# Test with balanced profile
+sudo tuned-adm profile balanced
+/tmp/performance_test.sh > /tmp/balanced_baseline.txt
+
+# Test with throughput-performance profile
+sudo tuned-adm profile throughput-performance
+/tmp/performance_test.sh > /tmp/throughput_baseline.txt
+
+# Test with latency-performance profile
+sudo tuned-adm profile latency-performance
+/tmp/performance_test.sh > /tmp/latency_baseline.txt
+
+# Compare the results
+diff /tmp/balanced_baseline.txt /tmp/throughput_baseline.txt
+Deliverable for Task 1: Three baseline report files (/tmp/balanced_baseline.txt, /tmp/throughput_baseline.txt, /tmp/latency_baseline.txt) and a visible diff output showing at least one changed kernel parameter (typically vm.swappiness or scheduler granularity values) between profiles. Confirm tuned-adm active correctly reflects the last applied profile each time.
+
+Subtask 1.3: Creating Custom tuned Profiles
+Create a web-server-optimized profile:
+sudo mkdir -p /etc/tuned/web-server-optimized
+
+sudo tee /etc/tuned/web-server-optimized/tuned.conf << 'EOF'
+#
+# Custom tuned profile for web server optimization
+#
+
+[main]
+summary=Optimized profile for web server workloads
+include=throughput-performance
+
+[sysctl]
+# Network optimizations
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_congestion_control = bbr
+net.core.netdev_max_backlog = 5000
+
+# Memory optimizations for web workloads
+vm.swappiness = 10
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+
+# File system optimizations
+fs.file-max = 2097152
+
+[cpu]
+governor = performance
+energy_perf_bias = performance
+
+[disk]
+elevator = mq-deadline
+EOF
+Apply and test the custom profile:
+sudo tuned-adm profile web-server-optimized
+tuned-adm active
+
+echo "=== Custom Profile Settings ==="
+sysctl net.core.rmem_max
+sysctl net.ipv4.tcp_congestion_control
+sysctl vm.swappiness
+sysctl fs.file-max
+Create a database-optimized profile:
+sudo mkdir -p /etc/tuned/database-optimized
+
+sudo tee /etc/tuned/database-optimized/tuned.conf << 'EOF'
+#
+# Custom tuned profile for database server optimization
+#
+
+[main]
+summary=Optimized profile for database server workloads
+include=latency-performance
+
+[sysctl]
+# Memory optimizations for database workloads
+vm.swappiness = 1
+vm.dirty_ratio = 3
+vm.dirty_background_ratio = 1
+vm.dirty_expire_centisecs = 500
+vm.dirty_writeback_centisecs = 100
+
+# Shared memory optimizations
+kernel.shmmax = 68719476736
+kernel.shmall = 4294967296
+
+# Network optimizations
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+
+[cpu]
+governor = performance
+energy_perf_bias = performance
+
+[disk]
+elevator = noop
+EOF
+
+sudo tuned-adm profile database-optimized
+tuned-adm active
+sysctl vm.swappiness
+sysctl kernel.shmmax
+Deliverable for Task 1: Two working custom profiles listed under tuned-adm list (web-server-optimized and database-optimized), each confirmed active via tuned-adm active, with sysctl output matching the values defined in each profile's tuned.conf.
+
+Task 2: Automate the Application of tuned Profiles Using Ansible
+Subtask 2.1: Setting Up Ansible Project Structure
+Create Ansible project structure:
+mkdir -p ~/ansible-tuned-automation
+cd ~/ansible-tuned-automation
+
+mkdir -p playbooks roles inventory group_vars host_vars
+
+cat > inventory/hosts << 'EOF'
+[web_servers]
+localhost ansible_connection=local
+
+[database_servers]
+# Add your database servers here
+# db1.example.com
+# db2.example.com
+
+[all:vars]
+ansible_user=root
+EOF
+Create group variables for different server types:
+cat > group_vars/web_servers.yml << 'EOF'
+---
+tuned_profile: web-server-optimized
+server_type: web
+monitoring_enabled: true
+
+web_tuning:
+  max_connections: 1000
+  keepalive_timeout: 65
+  worker_processes: auto
+EOF
+
+cat > group_vars/database_servers.yml << 'EOF'
+---
+tuned_profile: database-optimized
+server_type: database
+monitoring_enabled: true
+
+db_tuning:
+  shared_buffers: "256MB"
+  effective_cache_size: "1GB"
+  maintenance_work_mem: "64MB"
+EOF
+Subtask 2.2: Creating the tuned Management Role
+Create role structure and tasks:
+mkdir -p roles/tuned_management/tasks roles/tuned_management/templates roles/tuned_management/vars roles/tuned_management/handlers roles/tuned_management/files
+
+cat > roles/tuned_management/tasks/main.yml << 'EOF'
+---
+- name: Install tuned package
+  package:
+    name:
+      - tuned
+      - tuned-utils
+    state: present
+  become: yes
+
+- name: Start and enable tuned service
+  systemd:
+    name: tuned
+    state: started
+    enabled: yes
+  become: yes
+
+- name: Create custom tuned profile directory
+  file:
+    path: "/etc/tuned/{{ tuned_profile }}"
+    state: directory
+    mode: '0755'
+  become: yes
+  when: tuned_profile not in ['balanced', 'throughput-performance', 'latency-performance', 'desktop', 'powersave']
+
+- name: Deploy custom tuned profile configuration
+  template:
+    src: "{{ tuned_profile }}.conf.j2"
+    dest: "/etc/tuned/{{ tuned_profile }}/tuned.conf"
+    mode: '0644'
+  become: yes
+  when: tuned_profile not in ['balanced', 'throughput-performance', 'latency-performance', 'desktop', 'powersave']
+  notify: restart tuned
+
+- name: Apply tuned profile
+  command: "tuned-adm profile {{ tuned_profile }}"
+  become: yes
+  register: tuned_result
+  changed_when: "'Tuned profile' in tuned_result.stdout"
+
+- name: Verify tuned profile is active
+  command: tuned-adm active
+  register: active_profile
+  changed_when: false
+
+- name: Display active profile
+  debug:
+    msg: "Active tuned profile: {{ active_profile.stdout }}"
+EOF
+Create template files for custom profiles:
+cat > roles/tuned_management/templates/web-server-optimized.conf.j2 << 'EOF'
+#
+# Custom tuned profile for web server optimization
+# Managed by Ansible
+#
+
+[main]
+summary=Optimized profile for web server workloads
+include=throughput-performance
+
+[sysctl]
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_congestion_control = bbr
+net.core.netdev_max_backlog = 5000
+
+vm.swappiness = 10
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+
+fs.file-max = 2097152
+
+[cpu]
+governor = performance
+energy_perf_bias = performance
+
+[disk]
+elevator = mq-deadline
+EOF
+
+cat > roles/tuned_management/templates/database-optimized.conf.j2 << 'EOF'
+#
+# Custom tuned profile for database server optimization
+# Managed by Ansible
+#
+
+[main]
+summary=Optimized profile for database server workloads
+include=latency-performance
+
+[sysctl]
+vm.swappiness = 1
+vm.dirty_ratio = 3
+vm.dirty_background_ratio = 1
+vm.dirty_expire_centisecs = 500
+vm.dirty_writeback_centisecs = 100
+
+kernel.shmmax = 68719476736
+kernel.shmall = 4294967296
+
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+
+[cpu]
+governor = performance
+energy_perf_bias = performance
+
+[disk]
+elevator = noop
+EOF
+Create handlers:
+cat > roles/tuned_management/handlers/main.yml << 'EOF'
+---
+- name: restart tuned
+  systemd:
+    name: tuned
+    state: restarted
+  become: yes
+EOF
+Subtask 2.3: Creating and Running Ansible Playbooks
+Create the main deployment playbook:
+cat > playbooks/deploy-tuned-profiles.yml << 'EOF'
+---
+- name: Deploy and Configure tuned Profiles
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  roles:
+    - tuned_management
+EOF
+Create a verification playbook:
+cat > playbooks/verify-tuned-performance.yml << 'EOF'
+---
+- name: Verify tuned Profile Performance
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Check active tuned profile
+      command: tuned-adm active
+      register: current_profile
+      changed_when: false
+
+    - name: Collect current sysctl values
+      shell: |
+        echo "Active Profile: {{ current_profile.stdout }}"
+        echo "vm.swappiness: $(sysctl -n vm.swappiness)"
+        echo "vm.dirty_ratio: $(sysctl -n vm.dirty_ratio)"
+        echo "net.core.rmem_max: $(sysctl -n net.core.rmem_max)"
+        echo "net.core.wmem_max: $(sysctl -n net.core.wmem_max)"
+        echo "fs.file-max: $(sysctl -n fs.file-max)"
+      register: system_status
+      changed_when: false
+
+    - name: Display system status
+      debug:
+        msg: "{{ system_status.stdout_lines }}"
+
+    - name: Save performance metrics
+      copy:
+        content: "{{ system_status.stdout }}"
+        dest: "/tmp/performance_metrics_{{ inventory_hostname }}.txt"
+      delegate_to: localhost
+EOF
+Execute the playbooks:
+cd ~/ansible-tuned-automation
+
+# Check syntax first
+ansible-playbook -i inventory/hosts playbooks/deploy-tuned-profiles.yml --syntax-check
+
+# Run in check mode (dry run)
+ansible-playbook -i inventory/hosts playbooks/deploy-tuned-profiles.yml --check
+
+# Execute the playbook for real
+ansible-playbook -i inventory/hosts playbooks/deploy-tuned-profiles.yml -v
+
+# Verify the deployment
+ansible-playbook -i inventory/hosts playbooks/verify-tuned-performance.yml
+
+# Check the generated report
+cat /tmp/performance_metrics_localhost.txt
+Deliverable for Task 2: A successful ansible-playbook run against localhost (marked ok/changed, no failed=1), with tuned-adm active on the target showing web-server-optimized (since localhost is in the web_servers group), and a populated /tmp/performance_metrics_localhost.txt file containing the current sysctl values.
+
+Task 3: Verify Performance Improvements with Benchmarking Scripts
+Subtask 3.1: Creating a Performance Snapshot Script
+Create a system snapshot script:
+cat > ~/performance_analyzer.sh << 'EOF'
+#!/bin/bash
+
+# Comprehensive System Performance Analyzer
+# Usage: ./performance_analyzer.sh [profile_name]
+
+PROFILE_NAME=${1:-"current"}
+OUTPUT_DIR="/tmp/performance_analysis"
+TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+REPORT_FILE="$OUTPUT_DIR/performance_report_${PROFILE_NAME}_${TIMESTAMP}.txt"
+
+mkdir -p $OUTPUT_DIR
+
+echo "=== System Performance Analysis Report ===" > $REPORT_FILE
+echo "Profile: $PROFILE_NAME" >> $REPORT_FILE
+echo "Timestamp: $(date)" >> $REPORT_FILE
+echo "Hostname: $(hostname)" >> $REPORT_FILE
+echo "" >> $REPORT_FILE
+
+echo "=== Active tuned Profile ===" >> $REPORT_FILE
+tuned-adm active >> $REPORT_FILE 2>&1
+echo "" >> $REPORT_FILE
+
+echo "=== CPU Information ===" >> $REPORT_FILE
+lscpu | grep -E "CPU\(s\)|Thread|Core|Socket|Model name" >> $REPORT_FILE
+echo "" >> $REPORT_FILE
+
+echo "=== Memory Information ===" >> $REPORT_FILE
+free -h >> $REPORT_FILE
+echo "" >> $REPORT_FILE
+
+echo "=== Critical Kernel Parameters ===" >> $REPORT_FILE
+sysctl vm.swappiness vm.dirty_ratio vm.dirty_background_ratio >> $REPORT_FILE 2>&1
+sysctl net.core.rmem_max net.core.wmem_max >> $REPORT_FILE 2>&1
+sysctl fs.file-max >> $REPORT_FILE 2>&1
+echo "" >> $REPORT_FILE
+
+echo "=== CPU Governor ===" >> $REPORT_FILE
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null >> $REPORT_FILE || echo "N/A" >> $REPORT_FILE
+echo "" >> $REPORT_FILE
+
+echo "=== System Load ===" >> $REPORT_FILE
+uptime >> $REPORT_FILE
+echo "" >> $REPORT_FILE
+
+echo "Performance analysis completed. Report saved to: $REPORT_FILE"
+EOF
+
+chmod +x ~/performance_analyzer.sh
+Run the snapshot script under the balanced profile as a control:
+sudo tuned-adm profile balanced
+sleep 3
+~/performance_analyzer.sh balanced
+Subtask 3.2: Running a CPU Benchmark Across Profiles
+Create the CPU benchmark script:
+cat > ~/cpu_benchmark.sh << 'EOF'
+#!/bin/bash
+
+# CPU Performance Benchmark Script
+# Tests CPU performance under the currently active tuned profile
+
+BENCHMARK_DIR="/tmp/cpu_benchmarks"
+TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+PROFILE_NAME=$(tuned-adm active | sed 's/Current active profile: //')
+
+mkdir -p $BENCHMARK_DIR
+
+echo "=== CPU Benchmark Test ==="
+echo "Profile: $PROFILE_NAME"
+echo "Start time: $(date)"
+
+RESULT_FILE="$BENCHMARK_DIR/cpu_benchmark_${PROFILE_NAME}_${TIMESTAMP}.txt"
+
+python3 - "$RESULT_FILE" "$PROFILE_NAME" << 'PYEOF'
+import sys
+import time
+
+result_file = sys.argv[1]
+profile_name = sys.argv[2]
+
+
+def is_prime(n):
+    if n < 2:
+        return False
+    for i in range(2, int(n ** 0.5) + 1):
+        if n % i == 0:
+            return False
+    return True
+
+
+def run_prime_benchmark(limit):
+    start = time.time()
+    primes = [n for n in range(2, limit) if is_prime(n)]
+    elapsed = time.time() - start
+    return len(primes), elapsed
+
+
+count, elapsed = run_prime_benchmark(200000)
+
+with open(result_file, "w") as f:
+    f.write("=== CPU Benchmark Result ===\n")
+    f.write(f"Profile: {profile_name}\n")
+    f.write(f"Primes found below 200000: {count}\n")
+    f.write(f"Elapsed time (seconds): {elapsed:.4f}\n")
+
+print(f"Profile: {profile_name}")
+print(f"Found {count} primes in {elapsed:.4f} seconds")
+print(f"Result saved to {result_file}")
+PYEOF
+
+echo "End time: $(date)"
+EOF
+
+chmod +x ~/cpu_benchmark.sh
+Run the benchmark under three different profiles:
+# Benchmark with balanced profile
+sudo tuned-adm profile balanced
+sleep 3
+~/cpu_benchmark.sh
+
+# Benchmark with throughput-performance profile
+sudo tuned-adm profile throughput-performance
+sleep 3
+~/cpu_benchmark.sh
+
+# Benchmark with latency-performance profile
+sudo tuned-adm profile latency-performance
+sleep 3
+~/cpu_benchmark.sh
+Compare the benchmark results:
+echo "=== All CPU Benchmark Results ==="
+for f in /tmp/cpu_benchmarks/cpu_benchmark_*.txt; do
+    echo "--- $f ---"
+    cat "$f"
+    echo ""
+done
+Deliverable for Task 3: Three result files under /tmp/cpu_benchmarks/, one per profile (balanced, throughput-performance, latency-performance), each showing the elapsed time to find all primes below 200000. Students should observe elapsed times in the same general range (since this is a single-threaded CPU-bound task, tuned's I/O and scheduler tuning has limited effect on it) while confirming the correct profile name is recorded in each file and that tuned-adm active matched the intended profile at benchmark time.
+
+Subtask 3.3: Restoring the Default Profile
+Roll back to the balanced profile after testing:
+sudo tuned-adm profile balanced
+tuned-adm active
+Confirm system parameters have returned to defaults:
+sysctl vm.swappiness
+sysctl vm.dirty_ratio
+sysctl net.core.rmem_max
+Deliverable for Task 3 (rollback check): tuned-adm active reports balanced, and the sysctl values match the balanced profile's defaults captured in /tmp/balanced_baseline.txt from Task 1.
+
+Expected Outcomes
+A working understanding of how tuned profiles map to concrete sysctl and CPU governor changes on a live system
+Two custom tuned profiles (web-server-optimized, database-optimized) created manually and redeployed idempotently through an Ansible role
+A reusable benchmarking workflow that captures, compares, and archives performance data across multiple tuned profiles
+Troubleshooting
+If tuned-adm profile <name> reports success but sysctl values do not change, what would you check first: whether the profile file has a syntax error, whether another service is overriding the sysctl value after tuned applies it, or whether the profile actually includes the sysctl section you expect? How would you confirm which of these is happening?
+If the Ansible playbook run reports changed=0 for the "Apply tuned profile" task even after you modified the custom profile's template, what does that suggest about how the command module detects changes, and what would you inspect in the playbook to fix the reporting?
+Conclusion
+In this lab, students installed and explored the tuned daemon, inspected and applied built-in profiles, and authored two custom profiles tailored to web-server and database workloads. They then automated profile deployment and verification with an Ansible role, playbooks, and inventory structure, and used a Python-based CPU benchmark to capture repeatable, comparable performance data across profiles. Students practiced verifying tuning changes at the sysctl level, generating structured performance reports, and safely rolling back to a default profile. These skills translate directly to enterprise environments, where consistent, automated, and auditable performance tuning across fleets of servers is essential for reliability and predictable workload behavior.

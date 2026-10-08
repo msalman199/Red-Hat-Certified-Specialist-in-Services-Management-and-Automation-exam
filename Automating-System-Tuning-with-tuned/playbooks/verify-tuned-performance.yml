@@ -1,0 +1,32 @@
+---
+- name: Verify tuned Profile Performance
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Check active tuned profile
+      command: tuned-adm active
+      register: current_profile
+      changed_when: false
+
+    - name: Collect current sysctl values
+      shell: |
+        echo "Active Profile: {{ current_profile.stdout }}"
+        echo "vm.swappiness: $(sysctl -n vm.swappiness)"
+        echo "vm.dirty_ratio: $(sysctl -n vm.dirty_ratio)"
+        echo "net.core.rmem_max: $(sysctl -n net.core.rmem_max)"
+        echo "net.core.wmem_max: $(sysctl -n net.core.wmem_max)"
+        echo "fs.file-max: $(sysctl -n fs.file-max)"
+      register: system_status
+      changed_when: false
+
+    - name: Display system status
+      debug:
+        msg: "{{ system_status.stdout_lines }}"
+
+    - name: Save performance metrics
+      copy:
+        content: "{{ system_status.stdout }}"
+        dest: "/tmp/performance_metrics_{{ inventory_hostname }}.txt"
+      delegate_to: localhost
